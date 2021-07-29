@@ -15,7 +15,7 @@ def get_files(pth = None):
     return: a list of all files found including absolute path
     '''
     if pth is None:
-        raise ValueError('pth cannot be null')
+        raise ValueError('pth cannot be Snull')
         
     fles=[]
     for dirname, _, filenames in os.walk(pth):
@@ -75,14 +75,15 @@ def plot_imgs(imgs, cols=4, size=7, is_rgb=True, title="", cmap='gray', img_size
     plt.show()
 
 import matplotlib.patches as patches
-def plot_img_with_bboxes(img,  gt_bboxes=None, pred1_bboxes=None, pred2_bboxes=None, title=None,  size=7):
+def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size=7, out_path="output/", show_image=True):
     '''
     displays image associated with dicom files in img
     param: img -  fullsize dicom pixel_array image
+           img_name - name of the image
     param: gt_bboxes - ground truth
                     list of containing bounding boxe dicts, 1 per box.  Example of list with 1 box
                     ex: [{'x': 587.42021, 'y': 1377.02752, 'width': 434.11377, 'height': 196.05139}]
-    param: pred1_bboxes - first set of predictions
+    param: pred_bboxes - predictions of form
     param: pred2_bboxes - second set of predictions
  
     '''
@@ -97,27 +98,30 @@ def plot_img_with_bboxes(img,  gt_bboxes=None, pred1_bboxes=None, pred2_bboxes=N
             rect = patches.Rectangle((box['x'], box['y']), box['width'], box['height'], linewidth=1.5, edgecolor='w', facecolor='none', label="Ground Truth" if i ==0 else "")
             ax.add_patch(rect)
  
+    cmap=['y','r','g','b']
+    c=0
     #plot predicted bboxes if there
-    if pred1_bboxes is not None:
-        for i,box in enumerate(pred1_bboxes):       
-            # Create a Rectangle patch
-            rect = patches.Rectangle((box['x1'], box['y1']), box['x2']-box['x1'], box['y2']-box['y1'], linewidth=1.5, edgecolor='y', facecolor='none', label="Pred1" if i ==0 else "")
-            ax.add_patch(rect)
+    if pred_bboxes is not None:
+        for key,val in pred_bboxes.items():
+            for i,box in enumerate(val):       
+                # Create a Rectangle patch
+                rect = patches.Rectangle((box['x1'], box['y1']), box['x2']-box['x1'], box['y2']-box['y1'], linewidth=1.5, edgecolor=cmap[c], facecolor='none', label=key if i ==0 else "")
+                ax.add_patch(rect)
+            c+=1
 
-    #plot predicted bboxes if there
-    if pred2_bboxes is not None:
-        for i,box in enumerate(pred2_bboxes):       
-            # Create a Rectangle patch
-            rect = patches.Rectangle((box['x1'], box['y1']), box['x2']-box['x1'], box['y2']-box['y1'], linewidth=1.5, edgecolor='r', facecolor='none', label="Pred2" if i ==0 else "")
-            ax.add_patch(rect)
-
-    if title is not None:
-        plt.title(title)
-
-#     ax.text(w//2,5, 'Ground truth', horizontalalignment='center', verticalalignment='top',  color='yellow', fontsize=14)
-#     ax.text(w//2,50, 'Predicted', horizontalalignment='center', verticalalignment='top',  fontdict={'color':'red','size': 14 })
+    plt.title(img_name)
 
     ax.legend(loc='upper center')
+    
+    #save for later display
+    #save it to path
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
+    fig.savefig((out_path+img_name),bbox_inches='tight')
 
-    plt.show()
+    if(show_image == True):
+        plt.show()
+    else:
+        plt.close(fig)
+        
 
