@@ -87,6 +87,10 @@ def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size
     param: pred2_bboxes - second set of predictions
  
     '''
+    OFFSETX=100
+    offsetx=0
+    
+    OFFSETY=0
     h,w = img.shape
     fig,ax = plt.subplots(figsize=(size, size))
     ax.imshow(img, cmap="gray")
@@ -98,7 +102,7 @@ def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size
             rect = patches.Rectangle((box['x'], box['y']), box['width'], box['height'], linewidth=1.5, edgecolor='w', facecolor='none', label="Ground Truth" if i ==0 else "")
             ax.add_patch(rect)
  
-    cmap=['y','r','g','b']
+    cmap=['y','r','g','b', 'c']
     c=0
     #plot predicted bboxes if there
     if pred_bboxes is not None:
@@ -107,7 +111,9 @@ def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size
                 # Create a Rectangle patch
                 rect = patches.Rectangle((box['x1'], box['y1']), box['x2']-box['x1'], box['y2']-box['y1'], linewidth=1.5, edgecolor=cmap[c], facecolor='none', label=key if i ==0 else "")
                 ax.add_patch(rect)
+                ax.text(box['x1']+offsetx,box['y1'], box['conf'], bbox=dict(fill=False, edgecolor=cmap[c], linewidth=2))
             c+=1
+            offsetx+=OFFSETX
 
     plt.title(img_name)
 
