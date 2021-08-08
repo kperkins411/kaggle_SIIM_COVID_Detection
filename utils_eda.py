@@ -113,9 +113,9 @@ def generate_images(df,max_rows_to_eval, original_images_detected_on_dir,marked_
     show_image
     img_suffix='.png'
     '''
-#     print(original_images_detected_on_dir)
-#     print(marked_up_images_dest_dir)
-#     print(run_names)
+#     print(f'original_images_detected_on_dir= {original_images_detected_on_dir}')
+#     print(f'marked_up_images_dest_dir {marked_up_images_dest_dir}')
+#     print(f'Run names={run_names}')
     for i in tqdm(range(max_rows_to_eval)):
         row=df.loc[i]
 
@@ -124,11 +124,11 @@ def generate_images(df,max_rows_to_eval, original_images_detected_on_dir,marked_
         img=load_img( original_images_detected_on_dir, img_name)
         img=np.array(img)
         height,width = img.shape
-        print(f'Height={height} Width={width}')     
+#         print(f'Height={height} Width={width}')     
 
         #ground truth bounding boxes
         gt_boxes=get_boxes(row)
-        print(gt_boxes)
+#         print(gt_boxes)
 
         #lets see if df1 has better h,w info
         if 'dim0' in row:
@@ -158,12 +158,15 @@ def get_pred_bboxes(img_name,img_dir, run_names, run_dir,orig_width=None, orig_h
         orig_height,orig_width = im.shape
     
     results=[]
+   
+#     print(f'In get_pred_bboxes, run_names = {run_names}')
     for dir in run_names:
         #convert bounding boxes into lists of floats
         pred_boxes_and_confidence=[]
         
         #file to open
         fle = run_dir+dir+ '/labels/' + img_name.split('.')[0] +'.txt'
+#         print(f'   file to open = {fle}')
         if not os.path.isfile(fle):
             print(f'Missing label file for image {img_name} for run {dir}' )
             results.append([])
@@ -171,10 +174,11 @@ def get_pred_bboxes(img_name,img_dir, run_names, run_dir,orig_width=None, orig_h
             
         with open(fle) as f:
             lines=f.readlines()
+#             print(f'        file contains={lines}')
             for lne in lines:
                 lne=lne.replace('\n','')
                 lne="[" +lne.replace(' ',',') +"]"
-                lne=json.loads(lne)               
+                lne=json.loads(lne)    
                 pred_boxes_and_confidence.append(lne)
         pred_boxes = correct_bbox_format(pred_boxes_and_confidence,orig_width,orig_height)
         
@@ -229,7 +233,8 @@ def load_img( pth_destdir, imagename):
     nme = df1.loc[0,'id']+'.png'
     im= load_img( TEST_DIR, nme)
     '''
-    return Image.open(pth_destdir + imagename)
+    pth=os.path.join(pth_destdir , imagename)
+    return Image.open(pth)
     
 def get_boxes(row):
     '''
@@ -374,7 +379,7 @@ def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size
     param: pred2_bboxes - second set of predictions
  
     '''
-    OFFSETX=100
+    OFFSETX=0
     offsetx=0
     
     OFFSETY=0
@@ -389,7 +394,8 @@ def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size
             rect = patches.Rectangle((box['x'], box['y']), box['width'], box['height'], linewidth=1.5, edgecolor='w', facecolor='none', label="Ground Truth" if i ==0 else "")
             ax.add_patch(rect)
  
-    cmap=['y','r','g','b', 'c']
+
+    cmap=['y','r','g','b', 'c', 'm']  #[ 'm', , 'k']
     c=0
     #plot predicted bboxes if there
     if pred_bboxes is not None:
@@ -418,3 +424,391 @@ def plot_img_with_bboxes(img,img_name,  gt_bboxes=None, pred_bboxes=None,   size
         plt.close(fig)
         
 
+
+import shutil
+import os
+from os.path import join, getsize
+import json
+from ensemble_boxes import *
+
+
+class BBManager():
+    '''
+    point at detect dir for yolo and run it,
+    it will return wbf for a particular image
+    sample run
+    #
+    pth = '/home/keith/runs/detect'
+    a =BBManager(pth, runs={'exp0':1,'exp1':2,'exp2':3})
+    info1=a._get_bboxes('1111')
+    info2=a._get_bboxes('EEEEE')    #fails empty dict
+    wbf_boxes1 = a.get_wbf_boxes('1111') #calculates and returns list of all wbf boxes for this image
+    wbf_boxes2 = a.get_wbf_boxes('1111') #returns prev calculated value
+    wbf_boxes3 = a.get_wbf_boxes('1111',tmp_run_weights=[3,4], force_recalc=True) #recalculates for this image
+    wbf_boxes4 = a.get_wbf_boxes('EEEE') #fails  empty list
+    a.do_all_imgs()
+    '''
+    def __init__(self,pth,runs,dir_to_find='labels', ext_to_find="txt"  ):
+        '''
+
+        :param pth: where to start looking
+        :param runs: dict of runs to look for in path and the relative importence of each run
+                     ex. runs={'expo':.9,'exp1':.7}
+        :param dir_to_find:
+        :param ext_to_find:
+        '''
+        self.pth = pth
+        self.runs=runs
+        self.dir_to_find = dir_to_find
+        self.ext_to_find = ext_to_find
+        # self.cur_pth = pth
+        self.init()
+
+    def init(self):
+        self.all_files = []
+        self.images_set=set()
+        self.all_images = {}
+
+        self._get_all_files(self.pth)
+        self._parse_files()
+        
+    def _get_all_files(self,pth, dir=''):
+        '''
+
+        :param pth: start here
+        :param dir_to_find: looking for this dir
+        :param ext_to_find: looking for files of this type in above dir
+        :return:
+        '''
+        pth=join(pth,dir)
+        for root, dirs, files in os.walk(pth):
+            if dir == self.dir_to_find:
+                fls = [join(pth,fle) for fle in files if fle.split('.')[-1] == self.ext_to_find]
+                self.all_files.extend(fls)
+                return
+            for dir in dirs:
+                self._get_all_files(pth,dir)
+
+
+    def _get_boxes_from_fle(self,fn):
+        with open(fn) as f:
+            bboxes=[]
+            lines=f.readlines()
+            for lne in lines:
+                lne=lne.replace('\n','')
+                lne=lne.replace('  ',' ')
+                lne="[" +lne.replace(' ',' , ') +"]"
+                lne=json.loads(lne)
+                bboxes.append(lne)
+            return bboxes
+
+
+    def _parse_files(self):
+        for fle in self.all_files:
+            data = fle.split('/')
+            img = data[-1].split('.')[0]
+            exp = data[-3]
+            if exp not in self.runs:
+                continue
+            self.images_set.add(img)
+            bbox = {}
+
+            boxes = self._get_boxes_from_fle(fle)
+
+            if self.all_images.get(img) is None:
+                self.all_images[img] = {}
+            self.all_images[img][exp] = boxes
+
+    def _get_bboxes(self, img):
+        if self.all_images.get(img) is None:
+            return {}
+        return self.all_images[img]
+
+    @staticmethod
+    def _convert_from_center_width_height_to_x1y1x2y2(bbox):
+        '''
+        The submisison requires xmin, ymin, xmax, ymax format.
+        YOLOv5 returns x_center, y_center, width, height
+        :param bboxes:
+        :return: boxes
+        '''
+        xc,yc,w,h=bbox
+
+        xmin = xc - (w / 2)
+        ymin = yc - (h / 2)
+        xmax = xc + (w / 2)
+        ymax = yc + (w / 2)
+        lst=[xmin, ymin, xmax, ymax]
+        if len([v for v in lst if v<0])>0 or len([v for v in lst if v>1])>0:
+            raise ValueError("OH NO!wh->x1y1x2y2, values <0 or >1! "+str(lst))
+ 
+        return [xmin, ymin, xmax, ymax]
+
+    @staticmethod
+    def __convert_from_x1y1x2y2_to_center_width_height(bbox):
+        x1,y1,x2,y2=bbox
+        w = x2 - x1
+        h = y2 - y1
+        xc = x1 + w / 2
+        yc = y1 + h / 2
+        lst=[xc, yc, w, h]
+        if len([v for v in lst if v<0])>0:
+            print("OH NO!,x1y1x2y2->wh values negative! "+str(lst))
+        return lst
+
+
+    @staticmethod
+    def __fix( x):
+        '''
+        fixes a zipped list where x[1] is also a list
+        :param x:
+        :return:
+        usage ex.
+        c=[5,6,7]
+        b=[[1,1,1,1],[2,2,2,2],[3,3,3,3]]
+        s=[.1,.2,.3]
+        tmp=list(map(fix,zip(c,b,s)))
+        #print(tmp)
+        #[[5, 1, 1, 1, 1, 0.1], [6, 2, 2, 2, 2, 0.2], [7, 3, 3, 3, 3, 0.3]]
+        '''
+        x[1].insert(0, x[0])
+        x[1].append(x[2])
+        return x[1]
+
+    def get_wbf_boxes(self, img, out_put_dir, iou_thr=0.55, skip_box_thr=0.00, run_nms=True, run_wbf=True):
+        ''' 
+         applies WBF and maybe NMS to all the runs for an image and returns the adjusted bboxes
+
+        :param img: string, image to find boxes for
+
+         :param iou_thr: IoU value for boxes to be a match
+        :param skip_box_thr: exclude boxes with score lower than this variable
+        :param force_recalc force recalc, (use if change params)
+        :return: list, wbf bboxes in Yolov5 format (class, xc,yc,w,h, conf)
+        '''
+        #returns a dict
+        bboxes=self._get_bboxes(img)
+           
+        #get the runs for this i mage
+        runs=[*bboxes]
+        
+        #get possible run weights
+        run_weights=[self.runs[val] for val in runs]
+#         print(run_weights)
+       
+        #what if no boxes there?
+        if len(bboxes)==0:
+            return []
+
+        #get rid of wbf if it's there since we are recalculating it
+        if out_put_dir in bboxes:
+            del bboxes[out_put_dir]
+
+        boxes_list = []
+        conf_list = []
+        labels_list = []
+
+        for key, val in bboxes.items():
+            v_conf=[]
+            v_bboxes=[]
+            v_labels=[]
+ 
+            for lst in val:
+                # change coordinates
+                try:                   
+                    l=self._convert_from_center_width_height_to_x1y1x2y2(lst[1:5])
+                except ValueError as err:
+                    print(err.args)
+                    continue
+                v_conf.append(lst[5])
+                v_labels.append(lst[0])                  
+                v_bboxes.append(l)
+
+            boxes_list.append(v_bboxes)
+            conf_list.append(v_conf)
+            labels_list.append(v_labels)
+
+#         print(boxes_list)
+#         print(conf_list)
+#         print(labels_list)
+#         print(f'for img {img} Before wbf,Length boxes={len(boxes_list)}, scores={len(conf_list)}, labels={len(labels_list)}, weights={len(run_weights)}')
+        if run_wbf==True:
+            boxes_list, conf_list, labels_list = weighted_boxes_fusion(boxes_list, conf_list, labels_list, weights=run_weights,
+                                                      iou_thr=iou_thr, skip_box_thr=skip_box_thr)
+#         print(f'After wbf,Length boxes={len(boxes)}, scores={len(scores)}, labels={len(labels)}\n')
+
+        if  len(boxes_list)>0 and run_nms == True:
+            if run_wbf==True:
+                boxes_list=[boxes_list]
+                conf_list = [conf_list]
+                labels_list= [labels_list]
+                
+            nb_wbf=len(boxes_list)
+#             print(f'{len(boxes_list)}')
+#             for box in boxes_list:               
+#                 print(box)
+                
+            #NOTE: for this competition there are no overlapping boxes AFAICT, so if there are any overlapping boxes, drop the low 
+            #       conf ones
+            #NOTE I explicitly do NOT pass run weights since wbf above will reduce the nSumber of runs to 1, the out_put_dir one
+            boxes_list, conf_list, labels_list = nms(boxes_list, conf_list, labels_list, iou_thr=.4)
+            if(len(boxes_list) != nb_wbf):
+#                 print(f'NMS dropped {nb_wbf- len(boxes)} boxes in file {img}')
+                pass
+        else:
+            print(f'Image {img} has no boxes remaining above {skip_box_thr}!')
+     
+        # reassemble
+        #convert back to yolo format
+        n_boxes=[]
+        for box in boxes_list:
+            n_boxes.append(self.__convert_from_x1y1x2y2_to_center_width_height(box))
+
+        #zip it back together
+        boxes = list(map(self.__fix, zip(labels_list, n_boxes, conf_list)))
+        bboxes[out_put_dir]=boxes
+
+        return bboxes[out_put_dir]
+
+    def do_all_imgs(self,drop_below_this_conf=None,skip_box_thr=0.001,  run_nms=True, run_wbf=True, out_put_dir='wbf', verbose=False ):
+        '''
+        :param run_weights: list, how to weigh each runs bboxes, ie if you are looking at runs=['run1', 'run2'] and
+               run_weights = [2,1] then run1 is twice as  important as run2,
+
+        :param drop_below_this_conf: drop all boxes below this confidence level after running get_wbf_boxes 
+        run_nms if true run nms after wbf (gets rid of most overlapping bounding boxes)
+
+        creates a wbf/labels dir in self.path,
+        then saves all bounding boxes for all images in .txt file with img name
+        :return: nothing
+        '''
+        self.init()
+     
+        #create a place for the output
+        wbf_dir = os.path.join(self.pth,out_put_dir)
+        try:
+            shutil.rmtree(wbf_dir)
+        except os.error:
+            pass
+
+        wbf_dir=os.path.join(wbf_dir,'labels')
+        os.makedirs(wbf_dir, exist_ok=True)
+
+        dropped_bacause_low_conf=0
+        for img in self.images_set:
+            wbf_boxes = self.get_wbf_boxes(img,out_put_dir=out_put_dir, skip_box_thr=skip_box_thr,run_nms=run_nms, run_wbf=run_wbf )            
+            
+            #lets get rid of any boxes within any other boxes
+            data=''
+            numb_dropped_boxes=0
+            for box in wbf_boxes:
+                #dump low confidence boxes if we want
+                if drop_below_this_conf is not None:
+                    if box[5]<drop_below_this_conf:
+                        numb_dropped_boxes+=1
+                        if verbose:
+                            print(f'{img} dropped bbox, conf {box[5]}<drop_below_this_conf of {drop_below_this_conf}')
+                        continue
+
+                box = [round(num, 6) for num in box]
+                box[0]=int(box[0])
+
+                box=str(box)
+                box = box.replace('[','')
+                box = box.replace(']', '')
+                box=box.replace(',','')            
+                data=data+box+ '\n'
+             
+            if data == '':
+                if verbose:
+                    print(f'Image {img} started with {len(wbf_boxes)} bboxes, all dropped because confidence < {drop_below_this_conf} no .txt file generated')
+                pass
+            else:
+                if verbose:
+                    print(f'Image {img} started with {len(wbf_boxes)} bboxes, dropped {numb_dropped_boxes} bboxs (confidence < {drop_below_this_conf})')
+                with open(os.path.join(wbf_dir,(img+'.txt')), "w") as f:
+                    f.write(data) 
+############################################################## mAP and AP calculations
+
+def convert(bbox,row):
+    '''
+    bbox is a dict
+    take the correctly sized bbox in yolo format (x_center, y_center, width, height)
+    convert to xmin,xmax,ymin,ymax
+    then scale values between 0 and 1
+    return: list correct bbox
+    '''
+    #scale factor
+    orig_width=row['dim1']
+    orig_height=row['dim0']
+    
+    #convert
+    xmin= ((bbox['x'])/1)/orig_width
+    xmax= ((bbox['x'] +bbox['width']/2)/1)/orig_width
+    ymin= ((bbox['y'] )/1)/orig_height
+    ymax= ((bbox['y'] + bbox['height']/2)/1)/orig_height
+   
+    return[xmin,xmax,ymin,ymax]
+                            
+
+def get_gt_df_for_mAP_calc(df_src,df_dst, col):
+    '''
+    damn metadata
+    dim0 is y
+    dim1 is x
+    '''
+ 
+    for _, row in df_src.iterrows(): 
+        br=pd.Series(data=[np.nan for _ in range(6)], index=df_dst.columns)
+        br['id']=row['id']
+
+        #how many boxes
+        boxes=get_boxes(row)
+
+        #if no boxes enter nan for this row plus the id!
+        if len(boxes) == 0:
+            df_dst=df_dst.append(br, ignore_index=True)
+        else:
+            #otherwise create 1 row per bounding box
+            br['class']=0
+            for box in boxes:
+                #normalize
+                br['xmin'],br['xmax'],br['ymin'],br['ymax'] = convert(box,row)
+                df_dst=df_dst.append(br, ignore_index=True)               
+    return df_dst
+
+
+def get_predict_df_for_mAP_calc(df_dst, path_yolo_detect='tmp/yolov5/runs/detect', pred_dir='wbf_only'):
+    #use this class to get info
+    run_info={pred_dir: 1.0}
+    wbf=BBManager(path_yolo_detect, runs=run_info)
+    wbf.all_images
+    for key, value in wbf.all_images.items():
+        br=pd.Series(data=[np.nan for _ in range(7)], index=df_dst.columns)
+        br['id'] =key
+#         print(f'{key}')
+        for _, val1 in value.items():
+            for val2 in val1:
+                #finally 1 row per pred in yolov5 format  - class, xc,yc,w,h, conf)
+                br['class']=0.0
+                br['conf']=val2[5]
+                br['xmin'],br['ymin'],br['xmax'],br['ymax'] = wbf._convert_from_center_width_height_to_x1y1x2y2(val2[1:5])
+                df_dst=df_dst.append(br, ignore_index=True) 
+    return df_dst
+        
+#SAMPLE USAGE
+#see test_map.ipynb
+#!pip install map-boxes 
+
+# df_valid = pd.DataFrame(columns=['id', 'class','xmin','xmax','ymin','ymax'])
+# df_valid = uteda.get_gt_df_for_mAP_calc(df_src,df_valid, 'boxes')
+
+# df_predict_cols = pd.DataFrame(columns=['id', 'class','conf','xmin','xmax','ymin','ymax'])
+# df_predict = uteda.get_predict_df_for_mAP_calc(df_predict, path_yolo_detect='tmp/yolov5/runs/detect', pred_dir='wbf_only')
+
+# from map_boxes import mean_average_precision_for_boxes
+
+# ann = valid_df[['id', 'class','xmin','xmax','ymin','ymax']].values
+# det = df_predict[['id', 'class','conf','xmin','xmax','ymin','ymax']].values
+# mean_ap, average_precisions = mean_average_precision_for_boxes(ann, det,iou_threshold=0.5,verbose=True)
+# print(f'mAP={mean_ap}, average precision={average_precisions}')
